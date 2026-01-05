@@ -1,0 +1,121 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "static-log4shell"
+version = "0.1.0"
+authors = [
+    {name = "YourTeam", email = "your-email@example.com"},
+]
+description = "Static analysis scanner for Log4Shell (CVE-2021-44228) vulnerabilities in Java projects"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.7"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators", 
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+keywords = [
+    "log4j", 
+    "log4shell", 
+    "security", 
+    "vulnerability", 
+    "scanner", 
+    "cve-2021-44228",
+    "static-analysis",
+    "java",
+    "security-tools"
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov>=2.0",
+    "black>=21.0",
+    "flake8>=3.8",
+    "mypy>=0.800",
+    "build>=0.7.0",
+    "twine>=3.4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/username/static-log4shell"
+Documentation = "https://github.com/username/static-log4shell#readme"
+Repository = "https://github.com/username/static-log4shell.git"
+"Bug Tracker" = "https://github.com/username/static-log4shell/issues"
+Changelog = "https://github.com/username/static-log4shell/blob/main/CHANGELOG.md"
+
+[project.scripts]
+static-log4shell = "static_log4shell.scanner:main"
+slog4j = "static_log4shell.scanner:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/static_log4shell"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/README.md",
+    "/LICENSE",
+    "/pyproject.toml",
+]
+exclude = [
+    "/.git",
+    "/.github",
+    "/docs",
+    "*.pyc",
+    "/__pycache__",
+]
+
+# 개발 도구 설정
+[tool.black]
+line-length = 88
+target-version = ['py37']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--cov=static_log4shell --cov-report=term-missing"
+
+[tool.mypy]
+python_version = "3.7"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E203", "W503"]
