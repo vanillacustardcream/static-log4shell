@@ -1,43 +1,35 @@
 """
 Static Log4Shell Scanner
-Professional Log4Shell (CVE-2021-44228) vulnerability scanner
+A professional vulnerability scanner for Log4Shell (CVE-2021-44228)
+
+This package provides tools to detect Log4Shell vulnerabilities in Java projects
+by scanning JAR files, source code, and build configuration files.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.5"
 __author__ = "YourTeam"
 __email__ = "your-email@example.com"
-__description__ = "Static analysis scanner for Log4Shell vulnerabilities"
+__description__ = "Static Log4Shell Scanner - Professional vulnerability scanner"
 
-# 메인 클래스를 쉽게 import할 수 있도록 설정
-from .scanner import Log4ShellScanner, scan_project
+# Import main classes and functions
+from .scanner import Log4ShellScanner
 
-# 사용자가 라이브러리를 import할 때 바로 사용할 수 있는 것들
+# Define what gets exported when someone does "from static_log4shell import *"
 __all__ = [
     "Log4ShellScanner",
-    "scan_project",
-    "__version__",
-    "__author__",
-    "__description__",
 ]
 
-# 간단한 사용법 함수
-def quick_scan(path):
-    """
-    빠른 스캔 함수
-    
-    Args:
-        path (str): 스캔할 프로젝트 경로
-        
-    Returns:
-        dict: 스캔 결과 보고서
-    """
-    return scan_project(path)
+# Package metadata
+def get_version():
+    """Get the current version of the package."""
+    return __version__
 
-
-def version_info():
-    """버전 정보 출력"""
+def get_info():
+    """Get package information."""
     return {
-        'version': __version__,
-        'author': __author__,
-        'description': __description__
+        "name": "static-log4shell",
+        "version": __version__,
+        "author": __author__,
+        "email": __email__,
+        "description": __description__
     }
