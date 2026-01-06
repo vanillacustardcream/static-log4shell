@@ -1,469 +1,400 @@
-"""
-Log4Shell Professional Scanner
-핵심 스캐닝 로직과 실행 코드
-"""
-
+#!/usr/bin/env python3
 import os
 import re
 import json
-import sys
-import subprocess
+import argparse
 from datetime import datetime
-from pathlib import Path
+import sys
 
 class Log4ShellScanner:
-    """Log4Shell 취약점 전문 스캐너"""
-    
     def __init__(self):
         self.results = []
         self.scanned_files = set()
-        self.found_issues = set()
         self.java_version = "감지되지 않음"
         self.log4j_version = "감지되지 않음"
-        self.defense_score = 0
+        self.has_vulnerable_log4j = False
         
-        # 취약한 Log4j 버전 패턴 (CVE-2021-44228)
-        self.vuln_patterns = [
-            r'log4j-core-2\.([0-9]|1[0-5])\..*\.jar',
-            r'log4j-api-2\.([0-9]|1[0-5])\..*\.jar',
-            r'log4j-1\..*\.jar'
+        # CVE-2021-44228 취약한 버전 범위: 2.2.0-beta9 ~ 2.15.0
+        self.vulnerable_versions = [
+            r'2\.([2-9]|1[0-5])\..*',     # 2.2.x ~ 2.15.x
+            r'2\.2\.0-beta[9]',           # 2.2.0-beta9
+            r'2\.1[0-5]\..*',             # 2.10.x ~ 2.15.x  
+            r'1\..*'                       # 1.x 전체 (더 위험)
+        ]
+        
+        # 안전한 버전: 2.16.0 이상 (2.12.2, 2.12.3, 2.3.1 제외된 보안 릴리즈)
+        self.safe_versions = [
+            r'2\.1[6-9]\..*',             # 2.16.x ~ 2.19.x
+            r'2\.[2-9][0-9]\..*',         # 2.20.x 이상
+            r'2\.12\.[23]',               # 2.12.2, 2.12.3 (보안 릴리즈)
+            r'2\.3\.1'                    # 2.3.1 (보안 릴리즈)
         ]
 
-    def scan_project(self, path):
-        """
-        프로젝트 전체 보안 스캔
-        
-        Args:
-            path (str): 스캔할 프로젝트 경로
-            
-        Returns:
-            dict: 스캔 결과 보고서
-        """
+    def scan_directory(self, path):
+        """디렉토리 스캔"""
         print(f"🔍 Log4Shell 보안 스캔 시작: {path}")
         print("=" * 60)
-        
-        path = Path(path)
-        if not path.exists():
-            raise FileNotFoundError(f"경로를 찾을 수 없습니다: {path}")
-        
-        # 진행 상황 표시
         print("📂 파일 스캔 진행 중...")
         
-        # 재귀적으로 모든 파일 스캔
-        for root in path.rglob("*"):
-            if root.is_file():
-                self._scan_file(root)
-        
-        print(f"\n✅ 스캔 완료: {len(self.scanned_files)}개 파일 검사")
-        return self.generate_report()
-
-    def _scan_file(self, file_path):
-        """개별 파일 스캔"""
-        file_str = str(file_path)
-        if file_str in self.scanned_files:
-            return
-        self.scanned_files.add(file_str)
-        
-        # 실시간 파일 표시 (같은 줄에서 업데이트)
-        display_name = file_path.name[:35]
-        sys.stdout.write(f"    > {display_name:<35} \r")
-        sys.stdout.flush()
-        
-        # 파일 타입별 검사
-        suffix = file_path.suffix.lower()
-        name = file_path.name.lower()
-        
-        if suffix in ['.jar', '.war', '.ear']:
-            self._check_jar_file(file_path)
-        elif suffix == '.java':
-            self._check_source_code(file_path)
-        elif name in ['pom.xml', 'build.gradle']:
-            self._check_build_config(file_path)
-        elif name in ['application.properties', 'log4j2.xml', 'log4j.properties']:
-            self._check_config_files(file_path)
-
-    def _check_jar_file(self, file_path):
-        """JAR 파일 취약점 검사"""
-        filename = file_path.name
-        
-        for pattern in self.vuln_patterns:
-            if re.match(pattern, filename, re.IGNORECASE):
-                version = self._extract_version_from_filename(filename)
+        file_count = 0
+        for root, dirs, files in os.walk(path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                abs_path = os.path.abspath(file_path)
                 
-                # JndiLookup 클래스 제거 확인
-                jndi_status = self._check_jndi_removal(file_path)
-                
-                if jndi_status == "제거됨":
-                    severity = "보통"
-                    desc = f"취약한 버전이지만 JndiLookup 클래스 제거됨 (버전: {version})"
-                else:
-                    severity = "높음"
-                    desc = f"취약한 Log4j JAR 파일 발견 (버전: {version})"
-                
-                self._add_finding("JAR_VULNERABILITY", str(file_path), desc, severity)
-                break
-
-    def _check_jndi_removal(self, jar_path):
-        """JAR 파일에서 JndiLookup 클래스 제거 확인"""
-        try:
-            # unzip 명령어로 JAR 내용 확인 (간단한 방법)
-            result = subprocess.run(
-                ['unzip', '-l', str(jar_path)], 
-                capture_output=True, 
-                text=True, 
-                timeout=5
-            )
-            
-            if 'JndiLookup.class' in result.stdout:
-                return "존재"
-            else:
-                return "제거됨"
-        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
-            return "확인불가"
-
-    def _check_source_code(self, file_path):
-        """소스코드 보안 위험 패턴 검사"""
-        try:
-            content = file_path.read_text(encoding='utf-8', errors='ignore')
-            
-            # 고위험 패턴들
-            risk_patterns = [
-                # 외부 입력이 직접 로깅되는 경우 (가장 위험)
-                (r'logger\.(info|error|warn|debug|fatal)\([^)]*(?:request\.|getParameter|getHeader)[^)]*\)', 
-                 "외부 입력 데이터가 직접 로깅됨 (JNDI 인젝션 위험)", "높음"),
-                
-                # 문자열 연결 방식 로깅
-                (r'logger\.(info|error|warn|debug|fatal)\([^)]*\+[^)]*\)', 
-                 "문자열 연결 방식 로깅 (입력 검증 필요)", "보통"),
-                
-                # 하드코딩된 JNDI 패턴
-                (r'\$\{jndi:', 
-                 "JNDI 패턴 하드코딩됨 (즉시 제거 필요)", "높음"),
-                
-                # Log4j import 확인
-                (r'import\s+org\.apache\.logging\.log4j', 
-                 "Log4j 라이브러리 사용 중 (버전 확인 필요)", "낮음"),
-                
-                # 보안 필터링 함수 존재 (좋은 패턴)
-                (r'(sanitize|validate|escape|filter).*(?:before|prior).*log', 
-                 "입력 검증 로직 발견 (보안 강화됨)", "정보"),
-            ]
-            
-            for pattern, desc, severity in risk_patterns:
-                if re.search(pattern, content, re.IGNORECASE):
-                    self._add_finding("SOURCE_RISK", str(file_path), desc, severity)
-                    break  # 첫 번째 패턴만 보고
+                if abs_path in self.scanned_files:
+                    continue
                     
-        except Exception:
-            pass
+                self.scanned_files.add(abs_path)
+                file_count += 1
+                
+                # 실시간 진행상황 표시
+                sys.stdout.write(f"    > {file[:30]:<30}\r")
+                sys.stdout.flush()
+                
+                try:
+                    if file.endswith(('.jar', '.war')):
+                        self.scan_jar_file(file_path, file)
+                    elif file.endswith('.java'):
+                        self.scan_java_source(file_path)
+                    elif file.endswith(('pom.xml', 'build.gradle')):
+                        self.scan_build_file(file_path)
+                except:
+                    continue
+        
+        print(f"\n✅ 스캔 완료: {file_count}개 파일 검사\n")
 
-    def _check_build_config(self, file_path):
-        """빌드 설정에서 Log4j 버전 및 방어 설정 검사"""
-        try:
-            content = file_path.read_text(encoding='utf-8', errors='ignore')
-            
-            # 버전 정보 추출
-            self._extract_versions(content)
-            
-            # Log4j 의존성이 있는 경우만 검사
-            if 'log4j' in content.lower():
-                # 방어 설정 확인
-                defenses = self._check_defense_configurations(content)
-                
-                # Log4j 버전 취약성 검사
-                if self.log4j_version != "감지되지 않음":
-                    if self._is_vulnerable_version(self.log4j_version):
-                        if defenses:
-                            desc = f"취약한 Log4j 버전 사용 중 (v{self.log4j_version}) - 방어설정: {', '.join(defenses)}"
-                            severity = "보통"
-                        else:
-                            desc = f"취약한 Log4j 버전 사용 중 (v{self.log4j_version}) - 방어설정 없음"
-                            severity = "높음"
-                    else:
-                        desc = f"안전한 Log4j 버전 사용 중 (v{self.log4j_version})"
-                        severity = "낮음"
-                else:
-                    desc = "Log4j 의존성 발견 (정확한 버전 추출 실패)"
-                    severity = "보통"
-                
-                self._add_finding("BUILD_CONFIG", str(file_path), desc, severity)
-                
-        except Exception:
-            pass
+    def is_vulnerable_version(self, version):
+        """버전이 취약한지 확인"""
+        return any(re.match(pattern, version) for pattern in self.vulnerable_versions)
+    
+    def is_safe_version(self, version):
+        """버전이 안전한지 확인"""
+        return any(re.match(pattern, version) for pattern in self.safe_versions)
 
-    def _check_config_files(self, file_path):
-        """Log4j 설정 파일 검사"""
-        try:
-            content = file_path.read_text(encoding='utf-8', errors='ignore')
+    def scan_jar_file(self, file_path, filename):
+        """JAR 파일 스캔"""
+        # log4j JAR 파일 패턴 체크
+        log4j_jar_pattern = r'log4j-(?:core|api)-(\d+\.\d+(?:\.\d+)?(?:-\w+)?)'
+        match = re.search(log4j_jar_pattern, filename, re.IGNORECASE)
+        
+        if match:
+            version = match.group(1)
+            if self.log4j_version == "감지되지 않음":
+                self.log4j_version = version
             
-            # 위험한 설정들
-            risky_configs = [
-                ('JndiLookup', '🚨 JNDI Lookup 활성화됨'),
-                ('<JndiLookup', '🚨 JNDI Lookup 설정 발견'),
-                ('formatMsgNoLookups.*false', '🚨 보안 옵션 비활성화'),
+            if self.is_vulnerable_version(version):
+                self.has_vulnerable_log4j = True
+                self.add_vulnerability(
+                    'VULNERABLE_JAR',
+                    file_path,
+                    f'🚨 취약한 Log4j JAR 파일 (v{version}) - CVE-2021-44228 영향받음',
+                    'CRITICAL'
+                )
+                print(f"\n    🚨 위험 발견: {filename}")
+            elif self.is_safe_version(version):
+                self.add_vulnerability(
+                    'SAFE_JAR', 
+                    file_path,
+                    f'✅ 안전한 Log4j JAR 파일 (v{version}) - 패치된 버전',
+                    'SAFE'
+                )
+
+    def scan_java_source(self, file_path):
+        """Java 소스코드 스캔"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+
+            # Log4j 사용 패턴 검사
+            log4j_patterns = [
+                (r'import\s+org\.apache\.logging\.log4j', 'Log4j 2.x 라이브러리 import'),
+                (r'import\s+org\.apache\.log4j', 'Log4j 1.x 라이브러리 import (더 위험)'),
+                (r'LogManager\.getLogger', 'LogManager 사용'),
+                (r'Logger\s+logger\s*=.*LogManager', 'Logger 인스턴스 생성'),
             ]
             
-            # 안전한 설정들
-            safe_configs = [
-                ('formatMsgNoLookups.*true', '✅ 보안 옵션 활성화됨'),
-                ('LOG4J_FORMAT_MSG_NO_LOOKUPS.*true', '✅ 환경변수 보안 설정'),
-            ]
-            
-            for config, desc in risky_configs:
-                if re.search(config, content, re.IGNORECASE):
-                    self._add_finding("CONFIG_RISK", str(file_path), desc, "높음")
-            
-            for config, desc in safe_configs:
-                if re.search(config, content, re.IGNORECASE):
-                    self._add_finding("CONFIG_SAFE", str(file_path), desc, "정보")
-                    self.defense_score += 15
+            for pattern, description in log4j_patterns:
+                if re.search(pattern, content):
+                    # 위험한 로깅 패턴 추가 검사
+                    dangerous_patterns = [
+                        (r'logger\.(info|error|warn|debug)\s*\([^)]*\+[^)]*\)', '문자열 연결을 통한 위험한 로깅'),
+                        (r'logger\.(info|error|warn|debug)\s*\(\s*[^"]*\$\{[^}]*\}', '직접적인 ${} 패턴 사용'),
+                        (r'request\.getParameter.*logger\.(info|error|warn|debug)', '사용자 입력을 직접 로깅')
+                    ]
                     
-        except Exception:
-            pass
-
-    def _extract_versions(self, content):
-        """빌드 파일에서 Java 및 Log4j 버전 추출"""
-        # Java 버전 추출
-        java_patterns = [
-            r'java\.version["\']?\s*[:=]\s*["\']?([0-9]+\.?[0-9]*)',
-            r'sourceCompatibility\s*[:=]\s*["\']?([0-9]+\.?[0-9]*)',
-            r'target["\']?\s*[:=]\s*["\']?([0-9]+\.?[0-9]*)'
-        ]
-        
-        for pattern in java_patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                self.java_version = match.group(1)
-                break
-        
-        # Log4j 버전 추출  
-        log4j_patterns = [
-            r'log4j[^>]*?(?:version|:)\s*["\']?([0-9]+\.[0-9]+\.[0-9]+)',
-            r'<version>([0-9]+\.[0-9]+\.[0-9]+)</version>.*log4j',
-            r'org\.apache\.logging\.log4j[^:]*:([0-9]+\.[0-9]+\.[0-9]+)'
-        ]
-        
-        for pattern in log4j_patterns:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
-                self.log4j_version = match.group(1)
-                break
-
-    def _check_defense_configurations(self, content):
-        """방어 설정 확인"""
-        defenses = []
-        
-        # JVM 옵션 확인
-        if 'formatMsgNoLookups=true' in content:
-            defenses.append("JVM옵션")
-            self.defense_score += 25
-        
-        # 환경변수 설정
-        if 'LOG4J_FORMAT_MSG_NO_LOOKUPS' in content:
-            defenses.append("환경변수")
-            self.defense_score += 25
-        
-        # JNDI 관련 의존성 제외
-        if re.search(r'exclude.*jndi', content, re.IGNORECASE):
-            defenses.append("의존성제외")
-            self.defense_score += 25
-        
-        # 버전 업그레이드
-        if self.log4j_version != "감지되지 않음" and not self._is_vulnerable_version(self.log4j_version):
-            defenses.append("버전업그레이드")
-            self.defense_score += 25
-        
-        return defenses
-
-    def _is_vulnerable_version(self, version):
-        """Log4j 버전 취약성 판단"""
-        try:
-            parts = version.split('.')
-            major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
-            
-            # 2.16.0 이상은 안전
-            if major == 2 and (minor > 15 or (minor == 15 and patch > 0)):
-                return False
-            # 2.12.2, 2.12.3, 2.3.1은 보안 릴리즈
-            elif major == 2 and ((minor == 12 and patch in [2, 3]) or (minor == 3 and patch == 1)):
-                return False
-            # 나머지는 취약
-            elif major <= 2:
-                return True
-            
-            return False
+                    found_dangerous = False
+                    for danger_pattern, danger_desc in dangerous_patterns:
+                        if re.search(danger_pattern, content):
+                            self.add_vulnerability(
+                                'DANGEROUS_LOGGING',
+                                file_path,
+                                f'{description} + {danger_desc}',
+                                'HIGH'
+                            )
+                            found_dangerous = True
+                            break
+                    
+                    if not found_dangerous:
+                        self.add_vulnerability(
+                            'LOG4J_USAGE',
+                            file_path,
+                            f'{description} 감지',
+                            'INFO'
+                        )
+                    break
         except:
-            return True  # 파싱 실패시 안전을 위해 취약하다고 가정
+            pass
 
-    def _extract_version_from_filename(self, filename):
-        """파일명에서 버전 추출"""
-        match = re.search(r'([0-9]+\.[0-9]+\.[0-9]+)', filename)
-        return match.group(1) if match else "알수없음"
+    def scan_build_file(self, file_path):
+        """빌드 파일 스캔 (pom.xml, build.gradle)"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
 
-    def _add_finding(self, category, file_path, description, severity):
-        """발견사항 추가"""
-        finding_key = f"{category}:{file_path}:{description}"
-        if finding_key not in self.found_issues:
-            self.found_issues.add(finding_key)
+            # Java 버전 추출
+            java_patterns = [
+                r'<maven\.compiler\.source>(\d+\.?\d*)<',
+                r'<java\.version>(\d+\.?\d*)<', 
+                r'sourceCompatibility\s*=\s*[\'"]?(\d+\.?\d*)[\'"]?',
+                r'<source>(\d+\.?\d*)</source>',
+                r'<target>(\d+\.?\d*)</target>'
+            ]
             
-            self.results.append({
-                'category': category,
-                'file_path': file_path,
-                'description': description,
-                'severity': severity,
-                'timestamp': datetime.now().isoformat()
-            })
-            
-            # 높은 위험도 발견시 즉시 알림
-            if severity == "높음":
-                print(f"\n    🚨 위험 발견: {os.path.basename(file_path)}")
+            for pattern in java_patterns:
+                match = re.search(pattern, content)
+                if match and self.java_version == "감지되지 않음":
+                    self.java_version = match.group(1)
+                    break
 
-    def _get_risk_assessment(self):
-        """위험도 평가"""
-        high_count = len([r for r in self.results if r['severity'] == '높음'])
-        medium_count = len([r for r in self.results if r['severity'] == '보통'])
+            # Log4j 의존성 검사  
+            log4j_dependency_patterns = [
+                r'<artifactId>log4j-(?:core|api)</artifactId>.*?<version>(\d+\.\d+(?:\.\d+)?(?:-\w+)?)</version>',
+                r'log4j-(?:core|api)[\'"]?\s*:\s*[\'"]?(\d+\.\d+(?:\.\d+)?(?:-\w+)?)',
+                r'implementation.*log4j.*[\'"](\d+\.\d+(?:\.\d+)?(?:-\w+)?)[\'"]',
+                r'compile.*log4j.*[\'"](\d+\.\d+(?:\.\d+)?(?:-\w+)?)[\'"]'
+            ]
+            
+            for pattern in log4j_dependency_patterns:
+                matches = re.findall(pattern, content, re.DOTALL | re.IGNORECASE)
+                for version in matches:
+                    if self.log4j_version == "감지되지 않음":
+                        self.log4j_version = version
+                    
+                    if self.is_vulnerable_version(version):
+                        self.has_vulnerable_log4j = True
+                        self.add_vulnerability(
+                            'VULNERABLE_DEPENDENCY',
+                            file_path,
+                            f'🚨 취약한 Log4j 의존성 (v{version}) - CVE-2021-44228 영향',
+                            'CRITICAL'
+                        )
+                        print(f"\n    🚨 위험 발견: {os.path.basename(file_path)}")
+                    elif self.is_safe_version(version):
+                        self.add_vulnerability(
+                            'SAFE_DEPENDENCY',
+                            file_path,
+                            f'✅ 안전한 Log4j 의존성 (v{version}) - 패치된 버전',
+                            'SAFE'
+                        )
+                    else:
+                        self.add_vulnerability(
+                            'UNKNOWN_DEPENDENCY',
+                            file_path,
+                            f'⚠️ 확인 필요한 Log4j 의존성 (v{version})',
+                            'MEDIUM'
+                        )
+                    break
+
+        except:
+            pass
+
+    def add_vulnerability(self, vuln_type, file_path, description, severity):
+        """취약점 추가"""
+        self.results.append({
+            'type': vuln_type,
+            'file_path': file_path,
+            'description': description,
+            'severity': severity,
+            'timestamp': datetime.now().isoformat()
+        })
+
+    def get_security_status(self):
+        """보안 상태 평가"""
+        if not self.results:
+            return "🟡 정보없음 (Log4j 사용 감지되지 않음)", "정보없음"
         
-        if high_count > 0 and self.defense_score < 50:
-            return "🔴 매우 높음", "즉시 조치 필요"
-        elif high_count > 0 or (medium_count > 1 and self.defense_score < 70):
-            return "🟠 높음", "빠른 조치 권장"
-        elif medium_count > 0 or self.defense_score < 80:
-            return "🟡 보통", "개선 권장"
+        has_critical = any(v['severity'] == 'CRITICAL' for v in self.results)
+        has_high = any(v['severity'] == 'HIGH' for v in self.results)
+        has_safe = any(v['severity'] == 'SAFE' for v in self.results)
+        
+        if has_critical:
+            return "🔴 매우 위험 (즉시 조치 필요)", "매우 위험"
+        elif has_high:
+            return "🟠 위험 (조치 권장)", "위험"
+        elif has_safe:
+            return "🟢 안전 (패치된 버전 사용)", "안전"
         else:
-            return "🟢 양호", "현재 상태 유지"
+            return "🟡 확인 필요", "확인 필요"
 
-    def _generate_recommendations(self):
-        """맞춤형 권장사항 생성"""
-        recommendations = []
-        high_risks = [r for r in self.results if r['severity'] == '높음']
+    def print_results(self):
+        """결과 출력"""
+        security_display, security_level = self.get_security_status()
         
-        if high_risks:
-            recommendations.append("1. 🚨 긴급: Log4j를 2.17.1 이상으로 업그레이드")
-            
-        if self.defense_score < 50:
-            recommendations.append("2. ⚡ 임시조치: JVM 옵션 -Dlog4j2.formatMsgNoLookups=true 적용")
-            
-        if any('외부 입력' in r['description'] for r in self.results):
-            recommendations.append("3. 🛡️ 코드개선: 로깅 전 입력값 검증 로직 추가")
-            
-        if self.defense_score < 75:
-            recommendations.append("4. 🔧 환경설정: LOG4J_FORMAT_MSG_NO_LOOKUPS=true 환경변수 설정")
-            
-        return recommendations
+        # 취약점 분류
+        critical = [v for v in self.results if v['severity'] == 'CRITICAL']
+        high = [v for v in self.results if v['severity'] == 'HIGH']
+        medium = [v for v in self.results if v['severity'] == 'MEDIUM']
+        safe = [v for v in self.results if v['severity'] == 'SAFE']
 
-    def generate_report(self):
-        """최종 보고서 생성"""
-        risk_level, risk_msg = self._get_risk_assessment()
-        
-        return {
-            'scan_summary': {
-                'scan_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'scanned_files': len(self.scanned_files),
-                'total_findings': len(self.results),
-                'java_version': self.java_version,
-                'log4j_version': self.log4j_version,
-                'defense_score': min(self.defense_score, 100),
-                'risk_level': risk_level,
-                'risk_message': risk_msg
-            },
-            'findings': self.results,
-            'recommendations': self._generate_recommendations()
-        }
-
-
-def scan_project(path, output_file=None, verbose=True):
-    """
-    편의 함수: 프로젝트 스캔
-    
-    Args:
-        path (str): 스캔할 프로젝트 경로
-        output_file (str, optional): 결과 저장 파일 경로
-        verbose (bool): 상세 출력 여부
-        
-    Returns:
-        dict: 스캔 결과 보고서
-    """
-    scanner = Log4ShellScanner()
-    report = scanner.scan_project(path)
-    
-    if verbose:
-        # 결과 출력
-        summary = report['scan_summary']
-        print(f"\n📊 스캔 결과 요약")
+        print("📊 스캔 결과 요약")
         print("-" * 40)
-        print(f"  📅 스캔 시간: {summary['scan_time']}")
-        print(f"  📁 스캔 파일: {summary['scanned_files']:,}개")
-        print(f"  ☕ Java 버전: {summary['java_version']}")
-        print(f"  📚 Log4j 버전: {summary['log4j_version']}")
-        print(f"  🛡️  방어 점수: {summary['defense_score']}/100점")
-        print(f"  ⚠️  위험도: {summary['risk_level']} ({summary['risk_message']})")
-        print(f"  🔍 발견사항: {summary['total_findings']}개")
+        print(f"  📅 스캔 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"  📁 스캔 파일: {len(self.scanned_files):,}개")
+        print(f"  ☕ Java 버전: {self.java_version}")
+        print(f"  📚 Log4j 버전: {self.log4j_version}")
+        print(f"  🛡️  보안 상태: {security_display}")
+        print(f"  🔍 발견사항: {len(self.results)}개")
+
+        # 상세 발견사항
+        if critical:
+            print(f"\n🚨 심각한 취약점 ({len(critical)}개):")
+            for i, vuln in enumerate(critical, 1):
+                print(f"  {i}. {os.path.basename(vuln['file_path'])}")
+                print(f"     {vuln['description']}")
         
-        # 권장사항 출력
-        if report['recommendations']:
-            print(f"\n💡 권장 조치사항:")
-            for rec in report['recommendations']:
-                print(f"  {rec}")
-    
-    # 파일 저장
-    if output_file:
+        if high:
+            print(f"\n⚠️ 높은 위험 ({len(high)}개):")
+            for i, vuln in enumerate(high, 1):
+                print(f"  {i}. {os.path.basename(vuln['file_path'])}")
+                print(f"     {vuln['description']}")
+        
+        if medium:
+            print(f"\n📋 확인 필요 ({len(medium)}개):")
+            for i, vuln in enumerate(medium, 1):
+                print(f"  {i}. {os.path.basename(vuln['file_path'])}")
+                print(f"     {vuln['description']}")
+        
+        if safe:
+            print(f"\n✅ 안전한 구성 ({len(safe)}개):")
+            for i, vuln in enumerate(safe[:3], 1):  # 최대 3개만 표시
+                print(f"  {i}. {os.path.basename(vuln['file_path'])}")
+                print(f"     {vuln['description']}")
+            if len(safe) > 3:
+                print(f"     ... 외 {len(safe)-3}개 더")
+
+        self.print_recommendations()
+
+    def print_recommendations(self):
+        """권장 조치사항 출력 (취약점이 있을 때만)"""
+        if not self.has_vulnerable_log4j and not any(v['severity'] in ['CRITICAL', 'HIGH'] for v in self.results):
+            if any(v['severity'] == 'SAFE' for v in self.results):
+                print("\n🎉 축하합니다! 안전한 Log4j 버전을 사용하고 있습니다!")
+            else:
+                print("\n📋 Log4j 사용이 감지되지 않았습니다.")
+            print("💡 일반 권장사항:")
+            print("  • 의존성을 정기적으로 업데이트하세요")
+            print("  • 보안 스캔을 정기적으로 수행하세요")
+            return
+
+        print("\n🚨 긴급 조치사항:")
+        
+        # 1. 버전 업그레이드 (가장 우선)
+        print("  1. 📦 Log4j 업그레이드 (최우선)")
+        print("     Log4j를 2.17.1 이상 또는 2.12.2, 2.3.1(보안 릴리즈)로 업그레이드")
+        
+        # 2. JVM 옵션 (2.10.0 이상용)
+        if self.log4j_version != "감지되지 않음":
+            try:
+                version_parts = self.log4j_version.split('.')
+                major, minor = int(version_parts[0]), int(version_parts[1])
+                if major > 2 or (major == 2 and minor >= 10):
+                    print("  2. ⚡ JVM 옵션 적용 (임시 완화)")
+                    print("     -Dlog4j2.formatMsgNoLookups=true")
+            except:
+                print("  2. ⚡ JVM 옵션 적용 (임시 완화)")
+                print("     -Dlog4j2.formatMsgNoLookups=true")
+        
+        # 3. JndiLookup 클래스 제거 (2.10.0 미만용)
+        print("  3. 🗑️ JndiLookup 클래스 제거 (2.10.0 미만용)")
+        print("     zip -q -d log4j-core-*.jar \\")
+        print("       org/apache/logging/log4j/core/lookup/JndiLookup.class")
+        print("     ⚠️ 주의: JAR 파일 무결성 검증 실패 가능")
+
+        print("\n📋 추가 권장사항:")
+        print("  • 네트워크 아웃바운드 제한 (LDAP/RMI 포트 차단)")
+        print("  • 로깅 시 파라미터화된 메시지 사용")
+        print("  • CI/CD 파이프라인에 보안 스캔 통합")
+
+    def save_report(self, output_file):
+        """리포트 저장"""
+        security_display, security_level = self.get_security_status()
+        
+        report = {
+            'scan_time': datetime.now().isoformat(),
+            'total_files': len(self.scanned_files),
+            'java_version': self.java_version,
+            'log4j_version': self.log4j_version,
+            'security_status': security_level,
+            'has_vulnerable_log4j': self.has_vulnerable_log4j,
+            'total_findings': len(self.results),
+            'findings_by_severity': {
+                'critical': len([v for v in self.results if v['severity'] == 'CRITICAL']),
+                'high': len([v for v in self.results if v['severity'] == 'HIGH']),
+                'medium': len([v for v in self.results if v['severity'] == 'MEDIUM']),
+                'safe': len([v for v in self.results if v['severity'] == 'SAFE'])
+            },
+            'findings': self.results
+        }
+        
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
-        print(f"\n💾 보고서 저장: {output_file}")
-    
-    return report
-
+        
+        print(f"\n💾 상세 결과 저장: {os.path.abspath(output_file)}")
 
 def main():
-    """CLI 진입점"""
-    import argparse
-    
     parser = argparse.ArgumentParser(
-        description='Static Log4Shell Scanner - Professional vulnerability scanner',
+        description="Static Log4Shell Scanner - Professional vulnerability scanner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-예시:
+        epilog="""예시:
   static-log4shell ./my-java-project
   static-log4shell /path/to/project --output report.json
-  slog4j ~/workspace/spring-app
-        """
+  slog4j ~/workspace/spring-app"""
     )
     
-    parser.add_argument(
-        'path', 
-        help='스캔할 프로젝트 경로'
-    )
-    parser.add_argument(
-        '-o', '--output', 
-        help='결과 저장 파일 (JSON 형식)'
-    )
-    parser.add_argument(
-        '--version', 
-        action='version', 
-        version='Static Log4Shell Scanner v0.1.0'
-    )
-    parser.add_argument(
-        '-q', '--quiet',
-        action='store_true',
-        help='간단한 출력만 표시'
-    )
-    
+    parser.add_argument('path', help='스캔할 프로젝트 경로')
+    parser.add_argument('-o', '--output', help='결과 저장 파일 (JSON 형식)')
+    parser.add_argument('--version', action='version', version='static-log4shell 0.1.1')
+    parser.add_argument('-q', '--quiet', action='store_true', help='간단한 출력만 표시')
+
     args = parser.parse_args()
+
+    if not os.path.exists(args.path):
+        print(f"❌ 경로를 찾을 수 없습니다: {args.path}")
+        return 1
+
+    scanner = Log4ShellScanner()
     
     try:
-        # 스캔 실행
-        scan_project(args.path, args.output, verbose=not args.quiet)
+        scanner.scan_directory(args.path)
         
-    except FileNotFoundError as e:
-        print(f"❌ 오류: {e}")
-        sys.exit(1)
+        if not args.quiet:
+            scanner.print_results()
+        else:
+            _, security_level = scanner.get_security_status()
+            print(f"📊 결과: {len(scanner.results)}개 발견사항, 상태: {security_level}")
+        
+        if args.output:
+            scanner.save_report(args.output)
+            
     except KeyboardInterrupt:
-        print(f"\n⚠️ 사용자에 의해 중단됨")
-        sys.exit(1)
+        print("\n\n⚠️ 사용자에 의해 스캔이 중단되었습니다.")
+        return 1
     except Exception as e:
-        print(f"❌ 예상치 못한 오류: {e}")
-        sys.exit(1)
+        print(f"\n❌ 스캔 중 오류 발생: {e}")
+        return 1
 
+    return 0
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    exit(main())
