@@ -139,7 +139,7 @@ class Log4ShellScanner:
                     if 'spring-boot-starter-log4j2' in pattern:
                         spring_version = matches[0]
                         log4j_version = self.estimate_log4j_from_spring(spring_version)
-                        print(f"[DEBUG] Spring Boot 버전: {spring_version} → 추정 Log4j: {log4j_version}")
+                        print(f"[DEBUG] Spring Boot 버전: {spring_version} → 실제 Log4j: {log4j_version}")
                     else:
                         log4j_version = matches[0]
                         print(f"[DEBUG] Log4j 버전 발견: {log4j_version}")
@@ -158,23 +158,29 @@ class Log4ShellScanner:
             pass
 
     def estimate_log4j_from_spring(self, spring_version):
-        """Spring Boot 버전에서 Log4j 버전 추정"""
+        """Spring Boot 버전에서 Log4j 버전 추정 (실제 사용 버전)"""
         spring_to_log4j = {
-            '2.6.1': '2.17.1',  # 실제로는 2.14.1이었지만 업그레이드 권장
-            '2.6.0': '2.14.1',
-            '2.5.': '2.13.',
-            '2.4.': '2.12.',
-            '2.3.': '2.11.',
-            '2.2.': '2.10.',
-            '2.1.': '2.9.',
-            '2.0.': '2.7.',
+            # 🔥 실제 Spring Boot에서 사용하는 Log4j 버전 (취약!)
+            '2.6.1': '2.14.1',  # Spring Boot 2.6.1 → Log4j 2.14.1 (취약)
+            '2.6.0': '2.14.1',  # Spring Boot 2.6.0 → Log4j 2.14.1 (취약)
+            '2.5.6': '2.13.3',  # Spring Boot 2.5.6 → Log4j 2.13.3 (취약)
+            '2.5.': '2.13.',    # Spring Boot 2.5.x → Log4j 2.13.x (취약)
+            '2.4.': '2.12.',    # Spring Boot 2.4.x → Log4j 2.12.x (일부 취약)
+            '2.3.': '2.11.',    # Spring Boot 2.3.x → Log4j 2.11.x (취약)
+            '2.2.': '2.10.',    # Spring Boot 2.2.x → Log4j 2.10.x (취약)
+            '2.1.': '2.9.',     # Spring Boot 2.1.x → Log4j 2.9.x (취약)
+            '2.0.': '2.7.',     # Spring Boot 2.0.x → Log4j 2.7.x (취약)
         }
         
         for spring_prefix, log4j_version in spring_to_log4j.items():
             if spring_version.startswith(spring_prefix):
                 return log4j_version
                 
-        return "2.17.1"  # 기본값
+        # Spring Boot 2.7+ 는 보통 안전한 Log4j를 사용
+        if spring_version.startswith('2.7') or spring_version.startswith('2.8') or spring_version.startswith('2.9'):
+            return "2.17.1"  # 안전한 버전
+            
+        return "2.14.1"  # 기본값 (취약)
 
     def scan_java_source(self, file_path):
         """Java 소스코드 스캔"""
@@ -236,21 +242,31 @@ class Log4ShellScanner:
                 break
 
     def get_security_status(self):
-        """보안 상태 판정"""
-        # Log4j 버전이 취약한 경우
-        if self.log4j_version != "감지되지 않음" and self.is_vulnerable_version(self.log4j_version):
-            return "🔴 위험"
-            
-        # 취약점이 발견된 경우
+        """보안 상태 판정 (수정됨)"""
+        # 1. Log4j 버전이 취약한 경우 - 최우선 판정
+        if self.log4j_version != "감지되지 않음":
+            if self.is_vulnerable_version(self.log4j_version):
+                return "🔴 위험"
+            else:
+                # Log4j가 안전한 버전이면 다른 위험 요소 무시
+                return "🟢 안전"
+        
+        # 2. Log4j 버전 불명 + 취약점 발견 = 위험
         if self.results:
             return "🔴 위험"
             
-        # 안전한 경우
+        # 3. 기본: 안전
         return "🟢 안전"
 
     def get_recommendations(self):
-        """권장 조치사항"""
-        if not self.results and (self.log4j_version == "감지되지 않음" or not self.is_vulnerable_version(self.log4j_version)):
+        """권장 조치사항 (수정됨)"""
+        # Log4j가 안전한 버전이면 권장사항 없음
+        if (self.log4j_version != "감지되지 않음" and 
+            not self.is_vulnerable_version(self.log4j_version)):
+            return []
+        
+        # 취약점이 없으면 권장사항 없음
+        if not self.results and self.log4j_version == "감지되지 않음":
             return []
             
         recommendations = [
@@ -258,7 +274,7 @@ class Log4ShellScanner:
         ]
         
         # 버전에 따른 추가 권장사항
-        if self.log4j_version != "감지되지 않음":
+        if self.log4j_version != "감지되지 않음" and self.is_vulnerable_version(self.log4j_version):
             version_parts = self.log4j_version.split('.')
             if len(version_parts) >= 2:
                 major_minor = f"{version_parts[0]}.{version_parts[1]}"
