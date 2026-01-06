@@ -242,7 +242,7 @@ class Log4ShellScanner:
                 break
 
     def get_security_status(self):
-        """보안 상태 판정 (수정됨)"""
+        """보안 상태 판정"""
         # 1. Log4j 버전이 취약한 경우 - 최우선 판정
         if self.log4j_version != "감지되지 않음":
             if self.is_vulnerable_version(self.log4j_version):
@@ -259,7 +259,7 @@ class Log4ShellScanner:
         return "🟢 안전"
 
     def get_recommendations(self):
-        """권장 조치사항 (수정됨)"""
+        """권장 조치사항 (향상된 버전)"""
         # Log4j가 안전한 버전이면 권장사항 없음
         if (self.log4j_version != "감지되지 않음" and 
             not self.is_vulnerable_version(self.log4j_version)):
@@ -270,18 +270,45 @@ class Log4ShellScanner:
             return []
             
         recommendations = [
-            "📦 Log4j 업그레이드 (최우선)\n     Log4j를 2.17.1 이상 또는 2.12.2, 2.3.1(보안 릴리즈)로 업그레이드"
+            "📦 Log4j 업그레이드 (최우선 - 근본적 해결)\n     Log4j를 2.17.1 이상 또는 2.12.2, 2.3.1(보안 릴리즈)로 업그레이드"
         ]
         
-        # 버전에 따른 추가 권장사항
+        # 버전별 임시 조치사항 추가
         if self.log4j_version != "감지되지 않음" and self.is_vulnerable_version(self.log4j_version):
             version_parts = self.log4j_version.split('.')
             if len(version_parts) >= 2:
-                major_minor = f"{version_parts[0]}.{version_parts[1]}"
-                if major_minor in ['2.0', '2.1', '2.2', '2.3', '2.4', '2.5', '2.6', '2.7', '2.8', '2.9']:
-                    recommendations.append(
-                        "🗑️ JndiLookup 클래스 제거 (2.10.0 미만용)\n     zip -q -d log4j-core-*.jar \\\n       org/apache/logging/log4j/core/lookup/JndiLookup.class\n     ⚠️ 주의: JAR 파일 무결성 검증 실패 가능"
-                    )
+                try:
+                    major_minor = f"{version_parts[0]}.{version_parts[1]}"
+                    minor_version = float(f"{version_parts[0]}.{version_parts[1]}")
+                    
+                    # Log4j 2.10.0 이상 → JVM 옵션 사용 가능
+                    if minor_version >= 2.10:
+                        recommendations.append(
+                            "⚡ JVM 옵션 설정 (임시 조치 - 2.10.0+ 지원)\n" +
+                            "     # Java 실행 시 옵션 추가:\n" +
+                            "     java -Dlog4j2.formatMsgNoLookups=true -jar myapp.jar\n" +
+                            "     \n" +
+                            "     # 또는 환경변수 설정:\n" +
+                            "     export LOG4J_FORMAT_MSG_NO_LOOKUPS=true\n" +
+                            "     \n" +
+                            "     ✅ 장점: 재배포 불필요, 즉시 적용\n" +
+                            "     ❌ 단점: 임시방편, 환경변수 관리 필요"
+                        )
+                        
+                    # Log4j 2.10.0 미만 → 클래스 제거 방법
+                    if minor_version < 2.10:
+                        recommendations.append(
+                            "🗑️ JndiLookup 클래스 제거 (임시 조치 - 2.10.0 미만용)\n" +
+                            "     # log4j-core JAR 파일에서 위험 클래스 삭제:\n" +
+                            "     zip -q -d log4j-core-*.jar \\\n" +
+                            "       org/apache/logging/log4j/core/lookup/JndiLookup.class\n" +
+                            "     \n" +
+                            "     ✅ 장점: 물리적 제거로 실행 불가능\n" +
+                            "     ❌ 단점: 수동 작업, JAR 무결성 검증 실패 가능"
+                        )
+                except ValueError:
+                    # 버전 파싱 실패 시 기본 권장사항만 제공
+                    pass
                     
         return recommendations
 
@@ -310,7 +337,7 @@ def main():
     
     parser.add_argument('path', help='스캔할 프로젝트 경로')
     parser.add_argument('-o', '--output', help='결과 저장 파일 (JSON 형식)')
-    parser.add_argument('--version', action='version', version='%(prog)s 0.2.0')
+    parser.add_argument('--version', action='version', version='%(prog)s 0.2.2')
     parser.add_argument('-q', '--quiet', action='store_true', help='간단한 출력만 표시')
     
     args = parser.parse_args()
