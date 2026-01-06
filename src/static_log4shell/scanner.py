@@ -259,7 +259,7 @@ class Log4ShellScanner:
         return "🟢 안전"
 
     def get_recommendations(self):
-        """권장 조치사항 (향상된 버전)"""
+        """권장 조치사항 (장점/단점 제거 버전)"""
         # Log4j가 안전한 버전이면 권장사항 없음
         if (self.log4j_version != "감지되지 않음" and 
             not self.is_vulnerable_version(self.log4j_version)):
@@ -289,10 +289,7 @@ class Log4ShellScanner:
                             "     java -Dlog4j2.formatMsgNoLookups=true -jar myapp.jar\n" +
                             "     \n" +
                             "     # 또는 환경변수 설정:\n" +
-                            "     export LOG4J_FORMAT_MSG_NO_LOOKUPS=true\n" +
-                            "     \n" +
-                            "     ✅ 장점: 재배포 불필요, 즉시 적용\n" +
-                            "     ❌ 단점: 임시방편, 환경변수 관리 필요"
+                            "     export LOG4J_FORMAT_MSG_NO_LOOKUPS=true"
                         )
                         
                     # Log4j 2.10.0 미만 → 클래스 제거 방법
@@ -301,11 +298,9 @@ class Log4ShellScanner:
                             "🗑️ JndiLookup 클래스 제거 (임시 조치 - 2.10.0 미만용)\n" +
                             "     # log4j-core JAR 파일에서 위험 클래스 삭제:\n" +
                             "     zip -q -d log4j-core-*.jar \\\n" +
-                            "       org/apache/logging/log4j/core/lookup/JndiLookup.class\n" +
-                            "     \n" +
-                            "     ✅ 장점: 물리적 제거로 실행 불가능\n" +
-                            "     ❌ 단점: 수동 작업, JAR 무결성 검증 실패 가능"
+                            "       org/apache/logging/log4j/core/lookup/JndiLookup.class"
                         )
+                        
                 except ValueError:
                     # 버전 파싱 실패 시 기본 권장사항만 제공
                     pass
@@ -337,7 +332,7 @@ def main():
     
     parser.add_argument('path', help='스캔할 프로젝트 경로')
     parser.add_argument('-o', '--output', help='결과 저장 파일 (JSON 형식)')
-    parser.add_argument('--version', action='version', version='%(prog)s 0.2.2')
+    parser.add_argument('--version', action='version', version='%(prog)s 0.2.3')
     parser.add_argument('-q', '--quiet', action='store_true', help='간단한 출력만 표시')
     
     args = parser.parse_args()
